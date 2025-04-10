@@ -29,12 +29,29 @@ Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
-
 ---
-
 ## Usage
 
-### Basic Command:
+```
+git clone https://github.com/calebpentest/CMITM.git
+cd CMITM
+```
+
+### Windows (With `run.bat`)
+
+If you're using Windows, you can easily run the tool using the `run.bat` file provided. This will automatically execute the necessary Python commands.
+
+Simply double-click the `run.bat` file or run it from the command line:
+
+```bash
+run.bat
+```
+
+The batch file will prompt you for the required arguments (`-t`, `-g`, and `-i`). Make sure to provide your target IP, gateway IP, and network interface when prompted.
+
+### Basic Command (for other OS):
+
+If you're not using Windows, or if you prefer to run the tool manually, use the following command:
 
 ```bash
 python cmitm.py -t <TARGET_IP> -g <GATEWAY_IP> -i <INTERFACE>
@@ -69,11 +86,12 @@ CMITM/
 ├── requirements.txt      # Python dependencies
 ├── cmitm.log             # Runtime log file
 ├── README.md             # You're here!
+├── run.bat               # Windows batch file for easier execution
 ```
 
 ---
 
-## ⚠️ Legal Notice
+## Legal Notice
 
 **For educational purposes only**: This tool is intended for **authorized penetration testing** on devices you own or have explicit permission to test. Unauthorized use is illegal and unethical. The author assumes **no liability** for misuse.
 
