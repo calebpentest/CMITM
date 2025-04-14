@@ -30,7 +30,7 @@ if %ERRORLEVEL% NEQ 0 (
 )
 echo [DEBUG] Using Python command: %PYTHON_CMD%
 
-REM 
+REM === Check if cmitm.py exists ===
 set SCRIPT=cmitm.py
 echo [DEBUG] Checking for %SCRIPT%...
 if not exist "%SCRIPT%" (
@@ -39,11 +39,10 @@ if not exist "%SCRIPT%" (
     exit /b 1
 )
 
-REM 
 echo.
 echo [INFO] Detecting available interfaces...
 echo Available interfaces:
-%PYTHON_CMD% -c "try: from scapy.all import get_if_list; print('\n'.join(get_if_list())) except ImportError: print('Error: Scapy is not installed. Run: pip install scapy'); exit(1)" 2>nul
+%PYTHON_CMD% -c "import sys; from scapy.all import get_if_list; print('\n'.join(get_if_list()))" 2>nul
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Failed to list interfaces. Ensure Scapy is installed: %PYTHON_CMD% -m pip install scapy
     pause
@@ -61,7 +60,6 @@ set /p TARGET="Enter Target IP Address: " || (
     pause
     exit /b 1
 )
-REM Basic IP validation (checks for dots and numbers, not exhaustive)
 echo !TARGET!| findstr /R "^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$" >nul
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Invalid Target IP format. Use: x.x.x.x
@@ -99,7 +97,7 @@ set /p INTERFACE="Enter EXACT Interface Name from above: " || (
     exit /b 1
 )
 
-REM 
+REM === Validate the selected interface ===
 %PYTHON_CMD% -c "from scapy.all import get_if_list; print('\n'.join(get_if_list()))" > interfaces.txt 2>nul
 echo [DEBUG] Validating interface: "!INTERFACE!"
 findstr /X /C:"!INTERFACE!" interfaces.txt >nul
@@ -118,7 +116,7 @@ echo [INFO] Launching Stealth MITM...
 echo [DEBUG] Command: %PYTHON_CMD% "%SCRIPT%" -t "!TARGET!" -g "!GATEWAY!" -i "!INTERFACE!"
 echo.
 
-REM 
+REM === Execute MITM script ===
 %PYTHON_CMD% "%SCRIPT%" -t "!TARGET!" -g "!GATEWAY!" -i "!INTERFACE!"
 if %ERRORLEVEL% NEQ 0 (
     echo.
